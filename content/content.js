@@ -1,10 +1,20 @@
 // content.js
 
 let boldEnabled = false;
+let minWords = 4; // Default value
 let mutationObserver = null;
 
 // Add a WeakSet to keep track of processed nodes
 const processedNodes = new WeakSet();
+
+// List of HTML tag names to process (whitelist)
+const WHITELIST = [
+    'P', 'LI', 'SPAN', 'DIV', 'A', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+    'TD', 'TH', 'BLOCKQUOTE', 'PRE', 'LABEL', 'BUTTON', 'ARTICLE', 'SECTION'
+];
+
+// Regular expression to split text into sentences
+const SENTENCE_REGEX = /[^.!?]+[.!?]+[\])'"`’”]*|.+$/g;
 
 // Function to determine how many letters to bold based on word length
 function getBoldLength(wordLength) {
@@ -42,6 +52,24 @@ function isInsideMarkedElement(node) {
     return false;
 }
 
+// Function to check if a text node's parent is in the whitelist
+function isParentWhitelisted(node) {
+    const parent = node.parentElement;
+    if (!parent) return false;
+    return WHITELIST.includes(parent.tagName);
+}
+
+// Function to split text into sentences
+function splitIntoSentences(text) {
+    return text.match(SENTENCE_REGEX) || [];
+}
+
+// Function to count words in a sentence
+function countWords(sentence) {
+    // Split the sentence by whitespace and filter out empty strings
+    return sentence.trim().split(/\s+/).filter(word => word.length > 0).length;
+}
+
 // Function to process a single text node
 function processTextNode(node) {
     const parent = node.parentNode;
@@ -58,16 +86,32 @@ function processTextNode(node) {
     }
 
     const text = node.nodeValue;
-    const words = text.split(/\b/); // Split by word boundaries
+    const sentences = splitIntoSentences(text);
 
-    const newHTML = words.map(word => {
-        // Check if it's a word (letters only)
-        if (/^\w+$/.test(word)) {
-            return boldWord(word);
+    // Initialize an array to hold processed sentences
+    const processedSentences = [];
+
+    sentences.forEach(sentence => {
+        const wordCount = countWords(sentence);
+        if (wordCount >= minWords) { // Updated condition
+            // Process each word in the sentence
+            const processedSentence = sentence.replace(/\b\w+\b/g, (word) => {
+                // Check if it's a word (letters only)
+                if (/^\w+$/.test(word)) {
+                    return boldWord(word);
+                } else {
+                    return word;
+                }
+            });
+            processedSentences.push(processedSentence);
         } else {
-            return word;
+            // Leave the sentence unchanged
+            processedSentences.push(sentence);
         }
-    }).join('');
+    });
+
+    // Reconstruct the processed text
+    const newHTML = processedSentences.join('');
 
     if (newHTML !== text) {
         // Create a replacement span and mark it
@@ -100,6 +144,10 @@ function traverseAndProcess() {
                     if (style && (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0')) {
                         return NodeFilter.FILTER_REJECT;
                     }
+                }
+                // Check if the parent element is in the whitelist
+                if (!isParentWhitelisted(node)) {
+                    return NodeFilter.FILTER_REJECT;
                 }
                 // Check if inside a marked element
                 if (isInsideMarkedElement(node)) {
@@ -196,6 +244,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             window.location.reload();
         }
     }
+
+    if (request.minWords !== undefined) {
+        minWords = request.minWords;
+        if (boldEnabled) {
+            try {
+                // Disconnect observer while reapplying changes
+                if (mutationObserver) {
+                    mutationObserver.disconnect();
+                }
+
+                // Option 1: Reload the page to reset all bolding
+                window.location.reload();
+
+                // Option 2: Remove existing bolding and reapply without reloading
+                // To implement Option 2, additional logic is needed to remove existing bolding
+                // This can be complex and is not covered in this implementation
+            } catch (e) {
+                console.error('Error updating minWords:', e);
+                showReloadNotification();
+            }
+        }
+    }
 });
 
 // Function to observe DOM changes for dynamic content
@@ -224,11 +294,16 @@ function observeDOMChanges() {
                             return;
                         }
 
+                        // Check if the parent element is in the whitelist
+                        if (!isParentWhitelisted(node)) {
+                            return;
+                        }
+
                         processTextNode(node);
                         processedNodes.add(node);
                     }
                 } else if (node.nodeType === Node.ELEMENT_NODE && node.tagName !== 'SCRIPT' && node.tagName !== 'STYLE') {
-                    // Traverse child text nodes
+                    // Traverse child text nodes within the added element
                     const walker = document.createTreeWalker(
                         node,
                         NodeFilter.SHOW_TEXT,
@@ -244,6 +319,10 @@ function observeDOMChanges() {
                                     if (style && (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0')) {
                                         return NodeFilter.FILTER_REJECT;
                                     }
+                                }
+                                // Check if the parent element is in the whitelist
+                                if (!isParentWhitelisted(textNode)) {
+                                    return NodeFilter.FILTER_REJECT;
                                 }
                                 // Check if inside a marked element
                                 if (isInsideMarkedElement(textNode)) {
@@ -277,8 +356,9 @@ function observeDOMChanges() {
 }
 
 // Initialize based on storage
-chrome.storage.sync.get(['boldEnabled'], (result) => {
+chrome.storage.sync.get(['boldEnabled', 'minWords'], (result) => {
     boldEnabled = result.boldEnabled || false;
+    minWords = result.minWords || 4;
     if (boldEnabled) {
         try {
             applyBolding();
