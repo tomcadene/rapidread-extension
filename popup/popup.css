@@ -18,6 +18,8 @@ h2 {
     display: inline-block;
     width: 50px;
     height: 24px;
+    vertical-align: middle;
+    margin-right: 10px;
 }
 
 .switch input { 
@@ -56,4 +58,23 @@ input:checked + .slider {
 
 input:checked + .slider:before {
     transform: translateX(26px);
+}
+
+/* New Styles for Settings Section */
+.settings {
+    margin-top: 15px;
+    display: flex;
+    flex-direction: column;
+}
+
+.settings label {
+    margin-bottom: 5px;
+    font-size: 14px;
+}
+
+.settings input[type="number"] {
+    padding: 5px;
+    font-size: 14px;
+    width: 100%;
+    box-sizing: border-box;
 }
