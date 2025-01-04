@@ -30,10 +30,30 @@ function boldWord(word) {
     return `<b>${boldPart}</b>${remaining}`;
 }
 
-// Function to process text nodes
+// Helper function to check if a node is inside a marked element
+function isInsideMarkedElement(node) {
+    let current = node.parentElement;
+    while (current) {
+        if (current.hasAttribute('data-bold-extension')) {
+            return true;
+        }
+        current = current.parentElement;
+    }
+    return false;
+}
+
+// Function to process a single text node
 function processTextNode(node) {
     const parent = node.parentNode;
-    if (parent && (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE' || parent.isContentEditable)) {
+    if (!parent) return;
+
+    // Skip certain elements
+    if (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE' || parent.isContentEditable) {
+        return;
+    }
+
+    // Avoid reprocessing nodes inside already marked elements
+    if (isInsideMarkedElement(node)) {
         return;
     }
 
@@ -50,25 +70,76 @@ function processTextNode(node) {
     }).join('');
 
     if (newHTML !== text) {
+        // Create a replacement span and mark it
         const span = document.createElement('span');
+        span.setAttribute('data-bold-extension', 'true'); // Mark the replacement span
         span.innerHTML = newHTML;
         parent.replaceChild(span, node);
     }
 }
 
-// Function to traverse and process all text nodes
-function traverseNodes(node) {
-    if (node.nodeType === Node.TEXT_NODE && !processedNodes.has(node)) {
-        processTextNode(node);
-        processedNodes.add(node);
-    } else if (node.nodeType === Node.ELEMENT_NODE && node.tagName !== 'SCRIPT' && node.tagName !== 'STYLE') {
-        node.childNodes.forEach(child => traverseNodes(child));
+// Function to traverse and process text nodes using TreeWalker
+function traverseAndProcess() {
+    const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+        {
+            acceptNode: function(node) {
+                // Filter out empty or whitespace-only text nodes
+                if (!node.nodeValue.trim()) {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                // Skip if already processed
+                if (processedNodes.has(node)) {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                // Check if the text node is visible
+                const parentElement = node.parentElement;
+                if (parentElement) {
+                    const style = window.getComputedStyle(parentElement);
+                    if (style && (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0')) {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                }
+                // Check if inside a marked element
+                if (isInsideMarkedElement(node)) {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                return NodeFilter.FILTER_ACCEPT;
+            }
+        },
+        false
+    );
+
+    let node;
+    const nodesToProcess = [];
+
+    while (node = walker.nextNode()) {
+        nodesToProcess.push(node);
     }
+
+    // Process nodes in chunks to avoid blocking
+    const chunkSize = 100; // Number of nodes per batch
+    let index = 0;
+
+    function processChunk() {
+        const end = Math.min(index + chunkSize, nodesToProcess.length);
+        for (; index < end; index++) {
+            processTextNode(nodesToProcess[index]);
+            processedNodes.add(nodesToProcess[index]);
+        }
+        if (index < nodesToProcess.length) {
+            // Use setTimeout to allow the browser to handle other tasks
+            setTimeout(processChunk, 0);
+        }
+    }
+
+    processChunk();
 }
 
 // Function to apply bolding to the entire document
 function applyBolding() {
-    traverseNodes(document.body);
+    traverseAndProcess();
 }
 
 // Function to inject notification styles
@@ -108,6 +179,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         boldEnabled = request.toggleBold;
         if (boldEnabled) {
             try {
+                // Disconnect observer while applying changes
+                if (mutationObserver) {
+                    mutationObserver.disconnect();
+                }
+
                 applyBolding();
                 removeReloadNotification();
                 observeDOMChanges();
@@ -127,11 +203,74 @@ function observeDOMChanges() {
     if (mutationObserver) return;
 
     mutationObserver = new MutationObserver((mutations) => {
+        // Disconnect observer to prevent recursive calls
+        mutationObserver.disconnect();
+
         mutations.forEach((mutation) => {
             mutation.addedNodes.forEach((node) => {
-                traverseNodes(node);
+                if (node.nodeType === Node.TEXT_NODE) {
+                    if (!processedNodes.has(node) && node.nodeValue.trim()) {
+                        // Check if the text node is visible
+                        const parentElement = node.parentElement;
+                        if (parentElement) {
+                            const style = window.getComputedStyle(parentElement);
+                            if (style && (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0')) {
+                                return;
+                            }
+                        }
+
+                        // Check if inside a marked element
+                        if (isInsideMarkedElement(node)) {
+                            return;
+                        }
+
+                        processTextNode(node);
+                        processedNodes.add(node);
+                    }
+                } else if (node.nodeType === Node.ELEMENT_NODE && node.tagName !== 'SCRIPT' && node.tagName !== 'STYLE') {
+                    // Traverse child text nodes
+                    const walker = document.createTreeWalker(
+                        node,
+                        NodeFilter.SHOW_TEXT,
+                        {
+                            acceptNode: function(textNode) {
+                                if (!textNode.nodeValue.trim() || processedNodes.has(textNode)) {
+                                    return NodeFilter.FILTER_REJECT;
+                                }
+                                // Check if the text node is visible
+                                const parentElement = textNode.parentElement;
+                                if (parentElement) {
+                                    const style = window.getComputedStyle(parentElement);
+                                    if (style && (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0')) {
+                                        return NodeFilter.FILTER_REJECT;
+                                    }
+                                }
+                                // Check if inside a marked element
+                                if (isInsideMarkedElement(textNode)) {
+                                    return NodeFilter.FILTER_REJECT;
+                                }
+                                return NodeFilter.FILTER_ACCEPT;
+                            }
+                        },
+                        false
+                    );
+
+                    let textNode;
+                    const nodesToProcess = [];
+                    while (textNode = walker.nextNode()) {
+                        nodesToProcess.push(textNode);
+                    }
+
+                    nodesToProcess.forEach(textNode => {
+                        processTextNode(textNode);
+                        processedNodes.add(textNode);
+                    });
+                }
             });
         });
+
+        // Reconnect the observer
+        mutationObserver.observe(document.body, { childList: true, subtree: true });
     });
 
     mutationObserver.observe(document.body, { childList: true, subtree: true });
