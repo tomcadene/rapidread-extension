@@ -1,6 +1,8 @@
 # RapidRead Extension
 Browser extension that bold parts of words to enhance readability
 
+![rre](https://github.com/user-attachments/assets/584e9c72-d27b-4994-a793-bba28e3a09ca)
+
 ## Features
 ### Selective Bolding Based on Sentence Length
 + Automatically bolds the first few letters of each word only within sentences that contain at least X words. The value of X is user-defined, allowing for flexible customization based on reading preferences.
